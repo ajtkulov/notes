@@ -44,6 +44,8 @@ class HelpScreen(ModalScreen[None]):
                         "Enter - expand/select tree folder",
                         "n - create note",
                         "e - edit note body",
+                        "Ctrl+S / Save - save edits (edit mode)",
+                        "Escape / Cancel - discard edits (edit mode)",
                         "d - delete note",
                         "m - move note",
                         "/ - search",
@@ -158,6 +160,11 @@ class NotesApp(App[None]):
         height: 65%;
         padding: 1;
     }
+    #edit-toolbar {
+        height: 3;
+        padding: 0 1;
+        align: left middle;
+    }
     #editor {
         height: 1fr;
     }
@@ -175,6 +182,8 @@ class NotesApp(App[None]):
         Binding("slash", "search", "Search"),
         Binding("t", "filter_tag", "Tag"),
         Binding("question_mark", "help", "Help"),
+        Binding("ctrl+s", "save_edit", "Save", show=False),
+        Binding("escape", "cancel_edit", "Cancel", show=False),
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
     ]
@@ -195,6 +204,11 @@ class NotesApp(App[None]):
             ListView(id="note-list"),
             VerticalScroll(
                 Static("", id="detail-panel"),
+                Horizontal(
+                    Button("Save", id="save-edit", variant="primary"),
+                    Button("Cancel", id="cancel-edit"),
+                    id="edit-toolbar",
+                ),
                 TextArea(id="editor", language="markdown"),
                 id="detail-container",
             ),
@@ -203,6 +217,7 @@ class NotesApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        self.query_one("#edit-toolbar").add_class("hidden")
         self.query_one("#editor", TextArea).add_class("hidden")
         self._populate_tree()
         self.refresh_notes()
@@ -245,14 +260,18 @@ class NotesApp(App[None]):
 
     def _render_detail(self) -> None:
         detail = self.query_one("#detail-panel", Static)
+        toolbar = self.query_one("#edit-toolbar")
         editor = self.query_one("#editor", TextArea)
         if self.editing and self.selected_note:
-            detail.update("")
+            detail.add_class("hidden")
+            toolbar.remove_class("hidden")
             editor.text = self.selected_note.body
             editor.remove_class("hidden")
             editor.focus()
             return
+        toolbar.add_class("hidden")
         editor.add_class("hidden")
+        detail.remove_class("hidden")
         if not self.selected_note:
             detail.update("[dim]No notes in this folder. Press n to create one.[/dim]")
             return
@@ -270,6 +289,38 @@ class NotesApp(App[None]):
                 ]
             )
         )
+
+    def _save_edit(self) -> None:
+        if not self.editing or not self.selected_note:
+            return
+        editor = self.query_one("#editor", TextArea)
+        updated = self.selected_note.with_updates(body=editor.text)
+        self.store.save(updated)
+        self.selected_note = updated
+        for index, note in enumerate(self.notes):
+            if note.id == updated.id:
+                self.notes[index] = updated
+                break
+        self.editing = False
+        self._render_detail()
+
+    def _cancel_edit(self) -> None:
+        if not self.editing:
+            return
+        self.editing = False
+        self._render_detail()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save-edit":
+            self._save_edit()
+        elif event.button.id == "cancel-edit":
+            self._cancel_edit()
+
+    def action_save_edit(self) -> None:
+        self._save_edit()
+
+    def action_cancel_edit(self) -> None:
+        self._cancel_edit()
 
     def _relative_time(self, timestamp: datetime) -> str:
         delta = datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)
@@ -311,14 +362,6 @@ class NotesApp(App[None]):
             return
         self.editing = True
         self._render_detail()
-
-    def on_text_area_blur(self, event: TextArea.Blur) -> None:
-        if not self.editing or not self.selected_note:
-            return
-        updated = self.selected_note.with_updates(body=event.text_area.text)
-        self.store.save(updated)
-        self.editing = False
-        self.refresh_notes()
 
     @work
     async def action_delete_note(self) -> None:
