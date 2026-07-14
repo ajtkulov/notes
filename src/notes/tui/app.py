@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.keys import format_key
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Input, Label, ListItem, ListView, Static, TextArea, Tree
 
@@ -18,6 +19,7 @@ from notes.config import ensure_notes_dir
 from notes.models import Note, ROOT_PATH, normalize_path, normalize_tags
 from notes.storage import NoteStore
 from notes.tree import list_path
+from notes.tui.clipboard import copy_text
 
 
 @dataclass
@@ -30,6 +32,31 @@ class NoteFormData:
 
 # Backward-compatible alias
 CreateNoteFormData = NoteFormData
+
+
+def _format_pressed_key(key: str) -> str:
+    """Format a key identifier for on-screen display."""
+    modifier_labels = {
+        "ctrl": "Ctrl",
+        "shift": "Shift",
+        "meta": "Cmd",
+        "alt": "Alt",
+    }
+    binding = Binding(key, "action", "")
+    modifiers, bare_key = binding.parse_key()
+    key_label = format_key(bare_key)
+    if modifiers:
+        mod_labels = [modifier_labels.get(modifier, modifier.title()) for modifier in modifiers]
+        return "+".join([*mod_labels, key_label])
+    return key_label
+
+
+def _update_key_displays(node, event: events.Key) -> None:
+    """Update all key-press indicators under the given DOM node."""
+    label = _format_pressed_key(event.key)
+    for display in node.query(".key-press-display"):
+        display.update(f"[bold]{label}[/bold]")
+        display.add_class("-visible")
 
 
 class HelpScreen(ModalScreen[None]):
@@ -58,6 +85,7 @@ class HelpScreen(ModalScreen[None]):
                         "Enter - expand/select tree folder",
                         "n - create note (title, path, tags, body)",
                         "e - edit note (same form; Save/Ctrl+S, Cancel/Escape)",
+                        "c - copy selected note body",
                         "d - delete note",
                         "m - move note",
                         "/ - search",
@@ -289,10 +317,32 @@ class NotesApp(App[None]):
         height: 100%;
         padding: 1;
     }
+    #footer-bar {
+        dock: bottom;
+        height: 1;
+        width: 100%;
+    }
+    #footer-bar Footer {
+        dock: initial;
+        width: 1fr;
+    }
+    .key-press-display {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        margin-right: 1;
+        color: $footer-key-foreground;
+        background: $footer-key-background;
+        display: none;
+    }
+    .key-press-display.-visible {
+        display: block;
+    }
     """
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("c", "copy_note", "Copy", priority=True),
         Binding("n", "create_note", "New"),
         Binding("e", "edit_note", "Edit"),
         Binding("d", "delete_note", "Delete"),
@@ -320,7 +370,16 @@ class NotesApp(App[None]):
             VerticalScroll(Static("", id="detail-panel"), id="detail-container"),
             id="right-panel",
         )
-        yield Footer()
+        yield Horizontal(
+            Footer(show_command_palette=False),
+            Static("", classes="key-press-display"),
+            id="footer-bar",
+        )
+
+    async def on_event(self, event: events.Event) -> None:
+        if isinstance(event, events.Key):
+            _update_key_displays(self, event)
+        await super().on_event(event)
 
     def on_mount(self) -> None:
         self._populate_tree()
@@ -447,6 +506,15 @@ class NotesApp(App[None]):
         if index is not None and 0 <= index < len(self.notes):
             self.selected_note = self.notes[index]
             self._render_detail()
+
+    def action_copy_note(self) -> None:
+        if not self.selected_note:
+            self.notify("No note selected", severity="warning", timeout=2)
+            return
+        body = self.selected_note.body
+        if not copy_text(body):
+            self.copy_to_clipboard(body)
+        self.notify("Copied note body to clipboard", timeout=2)
 
     @work
     async def action_create_note(self) -> None:

@@ -3,11 +3,11 @@
 from pathlib import Path
 
 import pytest
-from textual.widgets import Button, Input, ListView, TextArea, Tree
+from textual.widgets import Button, Footer, Input, ListView, TextArea, Tree
 
 from notes.models import Note
 from notes.storage import NoteStore
-from notes.tui.app import NoteFormScreen, NotesApp
+from notes.tui.app import NoteFormScreen, NotesApp, _format_pressed_key
 
 
 def _detail_text(app: NotesApp) -> str:
@@ -226,3 +226,79 @@ async def test_tui_empty_folder_shows_empty_state(tmp_path: Path):
         await pilot.pause()
         assert "No notes in this folder" in _detail_text(app)
         assert app.selected_note is None
+
+
+@pytest.mark.asyncio
+async def test_tui_copy_note_body(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    copied: list[str] = []
+
+    def fake_copy_text(text: str) -> bool:
+        copied.append(text)
+        return True
+
+    monkeypatch.setattr("notes.tui.app.copy_text", fake_copy_text)
+
+    store_dir = tmp_path / "notes"
+    store = NoteStore(store_dir)
+    store.save(Note.create(title="Copy me", body="Note body text", short_id="copy"))
+
+    app = NotesApp(store_dir)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+
+    assert copied == ["Note body text"]
+
+
+@pytest.mark.asyncio
+async def test_tui_copy_shown_in_footer(tmp_path: Path):
+    copy_binding = next(binding for binding in NotesApp.BINDINGS if binding.action == "copy_note")
+    assert copy_binding.key == "c"
+    assert copy_binding.description == "Copy"
+    assert copy_binding.show is not False
+
+    store_dir = tmp_path / "notes"
+    store = NoteStore(store_dir)
+    store.save(Note.create(title="Copy me", body="Note body text", short_id="copy"))
+
+    app = NotesApp(store_dir)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        assert app.query_one(Footer) is not None
+
+
+@pytest.mark.asyncio
+async def test_tui_copy_without_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    copied: list[str] = []
+
+    def fake_copy_text(text: str) -> bool:
+        copied.append(text)
+        return True
+
+    monkeypatch.setattr("notes.tui.app.copy_text", fake_copy_text)
+
+    app = NotesApp(tmp_path / "notes")
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+
+    assert copied == []
+
+
+def test_format_pressed_key():
+    assert _format_pressed_key("c") == "c"
+    assert _format_pressed_key("ctrl+c") == "Ctrl+c"
+    assert _format_pressed_key("question_mark") == "?"
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_pressed_key(tmp_path: Path):
+    app = NotesApp(tmp_path / "notes")
+    async with app.run_test(size=(120, 40)) as pilot:
+        display = app.query_one(".key-press-display")
+        assert not display.has_class("-visible")
+        await pilot.press("c")
+        await pilot.pause()
+        assert display.has_class("-visible")
+        rendered = str(display.render())
+        assert "c" in rendered.lower()
